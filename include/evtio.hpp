@@ -53,7 +53,6 @@ typedef HANDLE evt_handle;
 #define logI() std::cout
 
 namespace evtio {
-
 /**
  * @brief
  *
@@ -62,17 +61,17 @@ enum evt_operation {
   /**
    * @brief
    */
-  op_read = 0x00000001,
+  EVT_OP_READ = 0x00000001,
 
   /**
    * @brief
    */
-  op_write = 0x00000002,
+  EVT_OP_WRITE = 0x00000002,
 
   /**
    * @brief
    */
-  OP_MAX = 0xFFFFFFFF
+  EVT_OP_MAX = 0xFFFFFFFF
 };
 
 /**
@@ -188,7 +187,7 @@ public:
    * @return true
    * @return false
    */
-  virtual bool wait(evt_event_list& event_list, int max_count, int timeout_ms) = 0;
+  virtual bool wait(evt_event_list& event_list, int max_count, int64_t timeout_ms) = 0;
 
   /**
    * @brief
@@ -222,7 +221,7 @@ protected:
 
     kqfd_ = ::kqueue();
     if (kqfd_ < 0) {
-      logE() << "failed to create kqueue instance:" << errno;
+      logE() << "failed to create kqueue instance:(" << errno << ")" << strerror(errno);
       return false;
     }
 
@@ -237,21 +236,21 @@ protected:
 
   bool kqueue_add(evt_handle h, int flags, evt_context* context) {
     // validate the arguments
-    if (kqfd_ < 0 || (!(flags & op_read) && !(flags & op_write))) {
+    if (kqfd_ < 0 || (!(flags & EVT_OP_READ) && !(flags & EVT_OP_WRITE))) {
       logE() << "invalid kqueue instance";
       return false;
     }
 
     std::vector<struct kevent> evts;
     // build read event
-    if (flags & op_read) {
+    if (flags & EVT_OP_READ) {
       struct kevent ev;
       EV_SET(&ev, h, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, context);
       evts.push_back(ev);
     }
 
     // build write event
-    if (flags & op_write) {
+    if (flags & EVT_OP_WRITE) {
       struct kevent ev;
       EV_SET(&ev, h, EVFILT_WRITE, EV_ADD | EV_ENABLE, 0, 0, context);
       evts.push_back(ev);
@@ -261,7 +260,8 @@ protected:
     struct kevent ev;
     EV_SET(&ev, h, EVFILT_READ, EV_ADD, 0, 0, context);
     if (::kevent(kqfd_, evts.data(), evts.size(), nullptr, 0, nullptr) < 0) {
-      logE() << "failed to associate the handle with kqueue read filter:" << errno;
+      logE() << "failed to associate the handle with kqueue read filter:(" << errno << ")"
+             << strerror(errno);
       return false;
     }
 
@@ -270,7 +270,7 @@ protected:
 
   bool kqueue_remove(evt_handle h) {
     if (kqfd_ < 0) {
-      logE() << "invalid epoll instance:" << errno;
+      logE() << "invalid epoll instance:(" << errno << ")" << strerror(errno);
       return false;
     }
 
@@ -280,13 +280,15 @@ protected:
     // remove from read filter
     EV_SET(&ev, h, EVFILT_READ, EV_DELETE, 0, 0, 0);
     if (0 != ::kevent(kqfd_, &ev, 1, nullptr, 0, nullptr) < 0 && errno == ENOENT) {
-      logE() << "failed to remove the handle form the kqueue read list:" << errno;
+      logE() << "failed to remove the handle form the kqueue read list:(" << errno << ")"
+             << strerror(errno);
     }
 
     // remove from write filter
     EV_SET(&ev, h, EVFILT_WRITE, EV_DELETE, 0, 0, 0);
     if (::kevent(kqfd_, &ev, 1, nullptr, 0, nullptr) < 0 && errno == ENOENT) {
-      logE() << "failed to remove the handle form the kqueue write list:" << errno;
+      logE() << "failed to remove the handle form the kqueue write list:(" << errno << ")"
+             << strerror(errno);
     }
 
     return true;
@@ -297,14 +299,19 @@ protected:
     event_list.clear();
 
     struct timespec limit;
-    limit.tv_sec = timeout_ms / 1000;
-    limit.tv_nsec = (timeout_ms % 1000) * 1000000;
+    if (timeout_ms >= 0) {
+      limit.tv_sec = timeout_ms / 1000;
+      limit.tv_nsec = (timeout_ms % 1000) * 1000000;
+    }
 
     // query the kqueue to get all signaled events
     std::vector<struct kevent> evts(max_count);
-    int nfd = ::kevent(kqfd_, nullptr, 0, evts.data(), evts.size(), &limit);
+    int nfd = ::kevent(kqfd_, nullptr, 0, evts.data(), evts.size(), timeout_ms < 0
+                       : nullptr
+                       : &limit);
     if (nfd < 0) {
-      logE() << "failed to query the socket status from kqueue:" << errno;
+      logE() << "failed to query the socket status from kqueue:(" << errno << ")"
+             << strerror(errno);
       return false;
     }
 
@@ -315,10 +322,10 @@ protected:
         continue;
       }
       if (evts[i].filter == EVFILT_READ) {
-        event_list.emplace_back(static_cast<uint32_t>(op_read),
+        event_list.emplace_back(static_cast<uint32_t>(EVT_OP_READ),
                                 static_cast<evt_context*>(evts[i].udata));
       } else if (evts[i].filter == EVFILT_WRITE) {
-        event_list.emplace_back(static_cast<uint32_t>(op_write),
+        event_list.emplace_back(static_cast<uint32_t>(EVT_OP_WRITE),
                                 static_cast<evt_context*>(evts[i].udata));
       } else {
         logE() << "unknown event filter";
@@ -331,7 +338,8 @@ protected:
     struct kevent ev;
     EV_SET(&ev, wakeup_evt_id_, EVFILT_USER, EV_ADD | EV_CLEAR | EV_ENABLE, 0, 0, 0);
     if (::kevent(kqfd_, &ev, 1, nullptr, 0, nullptr) < 0) {
-      logE() << "failed to associate the wakeup event with kqueue:" << errno;
+      logE() << "failed to associate the wakeup event with kqueue:(" << errno << ")"
+             << strerror(errno);
     }
   }
 
@@ -339,7 +347,8 @@ protected:
     struct kevent ev;
     EV_SET(&ev, wakeup_evt_id_, EVFILT_USER, EV_DELETE | EV_DISABLE, 0, 0, 0);
     if (::kevent(kqfd_, &ev, 1, nullptr, 0, nullptr) < 0) {
-      logE() << "failed to remove the wakeup event from the kqueue:" << errno;
+      logE() << "failed to remove the wakeup event from the kqueue:(" << errno << ")"
+             << strerror(errno);
     }
   }
 
@@ -349,7 +358,7 @@ protected:
     event.filter = EVFILT_USER;
     event.fflags = NOTE_TRIGGER;
     if (::kevent(kqfd_, &event, 1, nullptr, 0, nullptr) < 0) {
-      logE() << "failed to signal the wakeup event for kqueue:" << errno;
+      logE() << "failed to signal the wakeup event for kqueue:(" << errno << ")" << strerror(errno);
       return false;
     }
 
@@ -371,7 +380,7 @@ public:
   }
 
   bool attach(evt_context* context, uint32_t flags) override {
-    if (!context || (!(flags & op_read) && !(flags & op_write))) {
+    if (!context || (!(flags & EVT_OP_READ) && !(flags & EVT_OP_WRITE))) {
       return false;
     }
     return kqueue_add(context->handle, flags, context);
@@ -416,7 +425,7 @@ protected:
     // create epoll instance
     epfd_ = ::epoll_create(1024);
     if (epfd_ < 0) {
-      logE() << "failed to create epoll instance:" << errno;
+      logE() << "failed to create epoll instance:(" << errno << ")" << strerror(errno);
       return false;
     }
 
@@ -431,7 +440,7 @@ protected:
 
   bool epoll_add(evt_handle h, int flags, evt_context* context) {
     // validate the epoll instance
-    if (epfd_ < 0 || (!(flags & op_read) && !(flags & op_write))) {
+    if (epfd_ < 0 || (!(flags & EVT_OP_READ) && !(flags & EVT_OP_WRITE))) {
       logE() << "invalid epoll instance";
       return false;
     }
@@ -440,17 +449,17 @@ protected:
     struct epoll_event ev;
     // !note we use level trigger here
     uint32_t f = 0;
-    if (flags & op_read) {
+    if (flags & EVT_OP_READ) {
       f |= EPOLLIN;
     }
-    if (flags & op_write) {
+    if (flags & EVT_OP_WRITE) {
       f |= EPOLLOUT;
     }
 
     ev.events = f;
     ev.data.ptr = context;
     if (0 != ::epoll_ctl(epfd_, EPOLL_CTL_ADD, h, &ev)) {
-      logE() << "failed to associate the handle with epoll:" << errno;
+      logE() << "failed to associate the handle with epoll:(" << errno << ")" << strerror(errno);
       return false;
     }
 
@@ -460,28 +469,31 @@ protected:
   bool epoll_remove(evt_handle h) {
     // validate the epoll instance
     if (epfd_ < 0) {
-      logE() << "invalid epoll instance:" << errno;
+      logE() << "invalid epoll instance:(" << errno << ")" << strerror(errno);
       return false;
     }
 
     // remove the socket from epoll
     if (0 != ::epoll_ctl(epfd_, EPOLL_CTL_DEL, h, nullptr)) {
-      logE() << "failed to remove the handle from epoll:" << errno;
+      logE() << "failed to remove the handle from epoll:(" << errno << ")" << strerror(errno);
       return false;
     }
 
     return true;
   }
 
-  bool epoll_wait(evt_event_list& event_list, int max_count, int timeout_ms) {
+  bool epoll_wait(evt_event_list& event_list, int max_count, int64_t timeout_ms) {
     // clear the result vector
     event_list.clear();
 
     // query the epoll to get all signaled events
     std::vector<struct epoll_event> evts(max_count);
-    int nfd = ::epoll_wait(epfd_, evts.data(), evts.size(), timeout_ms);
+    int nfd = 0;
+    do {
+      nfd = ::epoll_wait(epfd_, evts.data(), evts.size(), timeout_ms < 0 ? -1 : timeout_ms);
+    } while (nfd < 0 && EINTR == errno);
     if (nfd < 0) {
-      logE() << "failed to query the handle from the epoll:" << errno;
+      logE() << "failed to query the handle from the epoll:(" << errno << ")" << strerror(errno);
     }
 
     // process the result
@@ -500,10 +512,10 @@ protected:
       // build event
       uint32_t flags = 0;
       if (evts[i].events & EPOLLIN) {
-        flags |= op_read;
+        flags |= EVT_OP_READ;
       }
       if (evts[i].events & EPOLLOUT) {
-        flags |= op_write;
+        flags |= EVT_OP_WRITE;
       }
       if (flags == 0) {
         logE() << "unknown event type";
@@ -520,10 +532,10 @@ protected:
   bool epoll_add_wakeup_event() {
     wakeup_fd_ = eventfd(0, EFD_NONBLOCK);
     if (wakeup_fd_ < 0) {
-      logE() << "failed to create eventfd:" << errno;
+      logE() << "failed to create eventfd:(" << errno << ")" << strerror(errno);
       return false;
     }
-    return epoll_add(wakeup_fd_, op_read, nullptr);
+    return epoll_add(wakeup_fd_, EVT_OP_READ, nullptr);
   }
 
   void epoll_remove_wakeup_event() {
@@ -550,7 +562,7 @@ public:
   }
 
   bool attach(evt_context* context, uint32_t flags) override {
-    if (!context || (!(flags & op_read) && !(flags & op_write))) {
+    if (!context || (!(flags & EVT_OP_READ) && !(flags & EVT_OP_WRITE))) {
       return false;
     }
     return epoll_add(context->handle, flags, context);
@@ -563,7 +575,7 @@ public:
     return epoll_remove(context->handle);
   }
 
-  bool wait(evt_event_list& event_list, int max_count, int timeout_ms) override {
+  bool wait(evt_event_list& event_list, int max_count, int64_t timeout_ms) override {
     return epoll_wait(event_list, max_count, timeout_ms);
   }
 
@@ -593,7 +605,7 @@ public:
     throw std::logic_error("method not yet implemented");
   }
 
-  bool wait(evt_context_list& context_list, int max_count, int timeout_ms) override {
+  bool wait(evt_context_list& context_list, int max_count, int64_t timeout_ms) override {
     throw std::logic_error("method not yet implemented");
   }
 
@@ -639,7 +651,7 @@ public:
     return impl_->detach(context);
   }
 
-  bool wait(evt_event_list& event_list, int max_count, int timeout_ms) {
+  bool wait(evt_event_list& event_list, int max_count, int64_t timeout_ms) {
     return impl_->wait(event_list, max_count, timeout_ms);
   }
 
@@ -648,7 +660,7 @@ public:
   }
 
   void close() {
-    return impl_->close();
+    impl_->close();
   }
 
 private:

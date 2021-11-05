@@ -15,18 +15,26 @@ add_compile_options(
     "-g"
 )
 
-add_executable(echo-udp-server 
+file(GLOB_RECURSE SRC_common
+    common/*
+)
+
+add_executable(echo_udp_server 
     echo_udp_server.cpp
+    ${SRC_common}
 )
 
-add_executable(echo-udp-client 
+add_executable(echo_udp_client 
     echo_udp_client.cpp
+    ${SRC_common}
 )
 
-add_executable(echo-tcp-server 
+add_executable(echo_tcp_server 
     echo_tcp_server.cpp
+    ${SRC_common}
 )
 
-add_executable(echo-tcp-client 
+add_executable(echo_tcp_client 
     echo_tcp_client.cpp
+    ${SRC_common}
 )
