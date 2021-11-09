@@ -340,7 +340,10 @@ protected:
     if (::kevent(kqfd_, &ev, 1, nullptr, 0, nullptr) < 0) {
       logE() << "failed to associate the wakeup event with kqueue:(" << errno << ")"
              << strerror(errno);
+      return false;
     }
+ 
+    return true;
   }
 
   void kqueue_remove_wakeup_event() {
