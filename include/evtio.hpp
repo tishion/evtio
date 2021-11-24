@@ -13,23 +13,28 @@
 #pragma once
 
 #pragma region stl header
-#include <exception>
 #include <iostream>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 #pragma endregion
 
 #pragma region platform header
 #include <errno.h>
-#include <unistd.h>
 #pragma endregion
 
 #if defined(__ANDROID__)
 #define ANDROID
+#include <unistd.h>
+
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
 
 typedef int evt_handle;
 #elif defined(__linux__)
 #define LINUX
+#include <unistd.h>
+
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 
@@ -37,12 +42,16 @@ typedef int evt_handle;
 
 #elif defined(__APPLE__)
 #define APPLE
+#include <unistd.h>
+
 #include <sys/event.h>
 
 typedef int evt_handle;
 
 #elif defined(_WIN32)
 #define WINDOWS
+#include <WinSock2.h>
+
 #include <windows.h>
 
 typedef HANDLE evt_handle;
@@ -234,7 +243,7 @@ protected:
     }
   }
 
-  bool kqueue_add(evt_handle h, int flags, evt_context* context) {
+  bool kqueue_add(evt_context* context, int flags) {
     // validate the arguments
     if (kqfd_ < 0 || (!(flags & EVT_OP_READ) && !(flags & EVT_OP_WRITE))) {
       logE() << "invalid kqueue instance";
@@ -245,20 +254,20 @@ protected:
     // build read event
     if (flags & EVT_OP_READ) {
       struct kevent ev;
-      EV_SET(&ev, h, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, context);
+      EV_SET(&ev, context->handle, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, context);
       evts.push_back(ev);
     }
 
     // build write event
     if (flags & EVT_OP_WRITE) {
       struct kevent ev;
-      EV_SET(&ev, h, EVFILT_WRITE, EV_ADD | EV_ENABLE, 0, 0, context);
+      EV_SET(&ev, context->handle, EVFILT_WRITE, EV_ADD | EV_ENABLE, 0, 0, context);
       evts.push_back(ev);
     }
 
     // associate the socket with kqueue read filter
     struct kevent ev;
-    EV_SET(&ev, h, EVFILT_READ, EV_ADD, 0, 0, context);
+    EV_SET(&ev, context->handle, EVFILT_READ, EV_ADD, 0, 0, context);
     if (::kevent(kqfd_, evts.data(), evts.size(), nullptr, 0, nullptr) < 0) {
       logE() << "failed to associate the handle with kqueue read filter:(" << errno << ")"
              << strerror(errno);
@@ -342,7 +351,7 @@ protected:
              << strerror(errno);
       return false;
     }
- 
+
     return true;
   }
 
@@ -386,7 +395,7 @@ public:
     if (!context || (!(flags & EVT_OP_READ) && !(flags & EVT_OP_WRITE))) {
       return false;
     }
-    return kqueue_add(context->handle, flags, context);
+    return kqueue_add(context, flags);
   }
 
   bool detach(evt_context* context) override {
@@ -441,7 +450,7 @@ protected:
     }
   }
 
-  bool epoll_add(evt_handle h, int flags, evt_context* context) {
+  bool epoll_add(evt_context* context, int flags) {
     // validate the epoll instance
     if (epfd_ < 0 || (!(flags & EVT_OP_READ) && !(flags & EVT_OP_WRITE))) {
       logE() << "invalid epoll instance";
@@ -461,7 +470,7 @@ protected:
 
     ev.events = f;
     ev.data.ptr = context;
-    if (0 != ::epoll_ctl(epfd_, EPOLL_CTL_ADD, h, &ev)) {
+    if (0 != ::epoll_ctl(epfd_, EPOLL_CTL_ADD, context->handle, &ev)) {
       logE() << "failed to associate the handle with epoll:(" << errno << ")" << strerror(errno);
       return false;
     }
@@ -568,7 +577,7 @@ public:
     if (!context || (!(flags & EVT_OP_READ) && !(flags & EVT_OP_WRITE))) {
       return false;
     }
-    return epoll_add(context->handle, flags, context);
+    return epoll_add(context, flags);
   }
 
   bool detach(evt_context* context) override {
@@ -595,29 +604,278 @@ public:
 
 #if defined(_WIN32)
 class evt_iocp : public impl::evt_impl {
-public:
-  bool open() override {
-    throw std::logic_error("method not yet implemented");
+private:
+  typedef struct OverlappedContext : OVERLAPPED {
+    int operation;
+
+    OverlappedContext(int op, void* ctx) {
+      memset(this, 0, sizeof(OverlappedContext));
+      operation = op;
+      Pointer = ctx;
+    }
+
+    void Reset() {
+      memset(this, 0, sizeof(OverlappedContext));
+    }
+
+    void Reset(int op, void* ctx) {
+      memset(this, 0, sizeof(OverlappedContext));
+      operation = op;
+      Pointer = ctx;
+    }
+  } OverlappedContext;
+
+  typedef std::unordered_map<HANDLE, OverlappedContext*> OverlappedContextMap;
+
+private:
+  HANDLE iocp_ = nullptr;
+  OverlappedContextMap overlapped_map_;
+  CRITICAL_SECTION cs_lock_;
+
+protected:
+  void iocp_clear_ctx() {
+    ::EnterCriticalSection(&cs_lock_);
+    for (auto& kv : overlapped_map_) {
+      if (kv.second) {
+        delete kv.second;
+      }
+    }
+    overlapped_map_.clear();
+    ::LeaveCriticalSection(&cs_lock_);
   }
 
-  bool attach(evt_context* context) override {
-    throw std::logic_error("method not yet implemented");
+  OverlappedContext* iocp_create_ctx(evt_context* ctx, int op) {
+    auto pOverlappedCtx = new OverlappedContext(op, ctx);
+    pOverlappedCtx->Pointer = ctx;
+    pOverlappedCtx->operation = op;
+
+    ::EnterCriticalSection(&cs_lock_);
+    auto it = overlapped_map_.find(ctx->handle);
+    if (it != overlapped_map_.end()) {
+      if (it->second) {
+        delete it->second;
+      }
+      it->second = pOverlappedCtx;
+    } else {
+      overlapped_map_[ctx->handle] = pOverlappedCtx;
+    }
+    ::LeaveCriticalSection(&cs_lock_);
+
+    return pOverlappedCtx;
+  }
+
+  OverlappedContext* iocp_get_ctx(HANDLE h) {
+    OverlappedContext* p = nullptr;
+
+    ::EnterCriticalSection(&cs_lock_);
+    auto it = overlapped_map_.find(h);
+    if (it != overlapped_map_.end()) {
+      if (it->second) {
+        p = it->second;
+      } else {
+        overlapped_map_.erase(it);
+      }
+    }
+    ::LeaveCriticalSection(&cs_lock_);
+
+    return p;
+  }
+
+  void iocp_destroy_ctx(HANDLE h) {
+    ::EnterCriticalSection(&cs_lock_);
+    auto it = overlapped_map_.find(h);
+    if (it != overlapped_map_.end()) {
+      if (it->second) {
+        delete it->second;
+      }
+      overlapped_map_.erase(it);
+    }
+    ::LeaveCriticalSection(&cs_lock_);
+  }
+
+  bool PostRecvOperation(HANDLE h, OverlappedContext* overlapped) {
+    overlapped->Reset(EVT_OP_READ, overlapped->Pointer);
+    WSABUF buf = {0, 0};
+    DWORD flags = MSG_PEEK;
+
+    // post an overlapped read operation
+    int rc = ::WSARecv((SOCKET)h, &buf, 1, nullptr, &flags, overlapped, nullptr);
+    int ec = ::WSAGetLastError();
+    if ((rc == SOCKET_ERROR) && (WSA_IO_PENDING != ec)) {
+      logE() << "WSARecv failed with error: " << ec << std::endl;
+      return false;
+    }
+
+    return true;
+  }
+
+  bool iocp_create() {
+    ::InitializeCriticalSection(&cs_lock_);
+
+    // create IOCP instance
+    iocp_ = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
+    if (nullptr == iocp_) {
+      logE() << "failed to create IOCP instance:" << GetLastError() << std::endl;
+      ::DeleteCriticalSection(&cs_lock_);
+      return false;
+    }
+
+    iocp_clear_ctx();
+    return true;
+  }
+
+  void iocp_destroy() {
+    if (iocp_) {
+      // close IOCP instance
+      ::CloseHandle(iocp_);
+      iocp_ = nullptr;
+    }
+
+    iocp_clear_ctx();
+    ::DeleteCriticalSection(&cs_lock_);
+  }
+
+  bool iocp_add(evt_context* context, int flags) {
+    if (iocp_ == nullptr) {
+      logE() << "invalid IOCP instance" << std::endl;
+      return false;
+    }
+
+    if (!(flags & EVT_OP_READ) || (flags & EVT_OP_WRITE)) {
+      logE() << "Invalid operation, only read operation is supported" << std::endl;
+      return false;
+    }
+
+    auto overlapped = iocp_create_ctx(context, EVT_OP_READ);
+    if (!overlapped) {
+      logE() << "failed to create overlapped context IOCP instance" << std::endl;
+      return false;
+    }
+
+    // associate the socket with IOCP instance
+    if (NULL ==
+        ::CreateIoCompletionPort((HANDLE)context->handle, iocp_, (ULONG_PTR)context->handle, 0)) {
+      logE() << "failed to associate the socket with IOCP instance:" << GetLastError() << std::endl;
+      iocp_destroy_ctx(context->handle);
+      return false;
+    }
+
+    // post first read operation
+    if (!PostRecvOperation(context->handle, overlapped)) {
+      logE() << "failed to post overlapped read operation" << std::endl;
+      iocp_destroy_ctx(context->handle);
+      return false;
+    }
+
+    return true;
+  }
+
+  bool iocp_remove(HANDLE h) {
+    if (iocp_ == nullptr) {
+      logE() << "invalid IOCP instance" << std::endl;
+      return false;
+    }
+
+    // cancel pending operation if any
+    ::CancelIo(h);
+    iocp_destroy_ctx(h);
+    return true;
+  }
+
+  bool iocp_wait(evt_event_list& event_list, int max_count, int timeout_ms) {
+    // clear the result vector
+    event_list.clear();
+
+    // get queued completion status
+    ULONG ulRemoved = 0;
+    std::vector<OVERLAPPED_ENTRY> evts(max_count);
+    if (!::GetQueuedCompletionStatusEx(iocp_, evts.data(), evts.size(), &ulRemoved, timeout_ms,
+                                       FALSE)) {
+      int ec = GetLastError();
+      if (WAIT_TIMEOUT != ec) {
+        logE() << "failed to get completed port:" << ec << std::endl;
+      }
+
+      // operation was canceled
+      if (ERROR_OPERATION_ABORTED == ec) {
+        logE() << "operation canceled" << std::endl;
+      }
+
+      return false;
+    }
+
+    // process the result
+    for (int i = 0; i < ulRemoved; i++) {
+      // validate the event data
+      if (evts[i].lpOverlapped == nullptr) {
+        // wakeup event or invalid socket
+        continue;
+      }
+
+      // convert to OverlappedContext*
+      OverlappedContext* pOverlappedCtx = static_cast<OverlappedContext*>(evts[i].lpOverlapped);
+
+      // build event
+      uint32_t flags = pOverlappedCtx->operation;
+      if (flags != EVT_OP_READ) {
+        logE() << "invalid event type" << std::endl;
+        continue;
+      }
+
+      // push back the event
+      auto ctx = static_cast<evt_context*>(pOverlappedCtx->Pointer);
+      event_list.emplace_back(flags, ctx);
+
+      // launch next read operation
+      if (!PostRecvOperation(ctx->handle, pOverlappedCtx)) {
+        logE() << "failed to post overlapped read operation" << std::endl;
+      }
+    }
+
+    return true;
+  }
+
+  bool iocp_wakeup() {
+    if (iocp_) {
+      return (TRUE == ::PostQueuedCompletionStatus(iocp_, 0, 0, nullptr));
+    }
+
+    return false;
+  }
+
+public:
+  bool open() override {
+    if (!iocp_create()) {
+      return false;
+    };
+
+    return true;
+  }
+
+  bool attach(evt_context* context, uint32_t flags) override {
+    if (!context || (!(flags & EVT_OP_READ) && !(flags & EVT_OP_WRITE))) {
+      return false;
+    }
+    return iocp_add(context, flags);
   }
 
   bool detach(evt_context* context) override {
-    throw std::logic_error("method not yet implemented");
+    if (!context) {
+      return false;
+    }
+    return iocp_remove(context->handle);
   }
 
-  bool wait(evt_context_list& context_list, int max_count, int64_t timeout_ms) override {
-    throw std::logic_error("method not yet implemented");
+  bool wait(evt_event_list& context_list, int max_count, int64_t timeout_ms) override {
+    return iocp_wait(context_list, max_count, timeout_ms);
   }
 
   bool wakeup() override {
-    throw std::logic_error("method not yet implemented");
+    return iocp_wakeup();
   }
 
   void close() override {
-    throw std::logic_error("method not yet implemented");
+    iocp_destroy();
   }
 };
 #endif

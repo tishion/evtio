@@ -11,9 +11,17 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/out/bin")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/out/bin")
 
 # generate debug symbols
-add_compile_options(
-    "-g"
-)
+
+if (WINDOWS)
+    add_compile_options(
+        /W4
+        -D_CRT_SECURE_NO_WARNINGS
+    )
+else()
+    add_compile_options(
+        -g
+    )
+endif()
 
 file(GLOB_RECURSE SRC_common
     common/*

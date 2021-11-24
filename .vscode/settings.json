@@ -1,6 +1,6 @@
 {
     "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
-    "cmake.buildDirectory": "${workspaceFolder}/build/linux",
+    "cmake.buildDirectory": "${workspaceFolder}/.build/${buildKit}",
     "files.associations": {
         "cerrno": "cpp"
     }

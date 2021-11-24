@@ -2,10 +2,20 @@
 #define UDP_SOCKET_H
 #pragma once
 
+#if defined(_WIN32)
+#include <winsock2.h>
+#else
 #include <sys/socket.h>
+#endif
 
 #include <cstdint>
 #include <string>
+
+#if defined(_WIN32)
+#define SOCKFD SOCKET
+#else
+#define SOCKFD int
+#endif
 
 /**
  * @brief
@@ -30,7 +40,7 @@ public:
    *
    * @return int
    */
-  int fd();
+  SOCKFD fd();
 
   /**
    * @brief
@@ -39,6 +49,15 @@ public:
    * @return false
    */
   bool open();
+
+  /**
+   * @brief Sets the nonblock object
+   *
+   * @param nonblock
+   * @return true
+   * @return false
+   */
+  bool set_nonblock(bool nonblock);
 
   /**
    * @brief
@@ -68,10 +87,9 @@ public:
    * @param flag
    * @param src_addr
    * @param addr_len
-   * @return ssize_t
+   * @return int
    */
-  ssize_t recvfrom(uint8_t* buf, ssize_t len, int flag, struct sockaddr* src_addr,
-                   socklen_t* addr_len);
+  int recvfrom(uint8_t* buf, int len, int flag, struct sockaddr* src_addr, int* addr_len);
 
   /**
    * @brief
@@ -79,11 +97,9 @@ public:
    * @param buf
    * @param len
    * @param flag
-   * @param src_addr
-   * @param addr_len
-   * @return ssize_t
+   * @return int
    */
-  ssize_t recv(uint8_t* buf, ssize_t len, int flag, struct sockaddr* src_addr, socklen_t* addr_len);
+  int recv(uint8_t* buf, int len, int flag);
 
   /**
    * @brief
@@ -93,10 +109,9 @@ public:
    * @param flag
    * @param dst_addr
    * @param addr_len
-   * @return ssize_t
+   * @return int
    */
-  ssize_t sendto(const uint8_t* buf, ssize_t len, int flag, struct sockaddr* dst_addr,
-                 socklen_t addr_len);
+  int sendto(const uint8_t* buf, int len, int flag, struct sockaddr* dst_addr, int addr_len);
 
   /**
    * @brief
@@ -104,9 +119,9 @@ public:
    * @param buf
    * @param len
    * @param flag
-   * @return ssize_t
+   * @return int
    */
-  ssize_t send(const uint8_t* buf, ssize_t len, int flag);
+  int send(const uint8_t* buf, int len, int flag);
 
   /**
    * @brief
@@ -125,6 +140,6 @@ private:
    * @brief
    *
    */
-  int sock_fd_ = -1;
+  SOCKFD sock_fd_ = INVALID_SOCKET;
 };
 #endif
