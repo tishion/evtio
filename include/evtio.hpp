@@ -782,15 +782,15 @@ protected:
     return true;
   }
 
-  bool iocp_wait(evt_event_list& event_list, int max_count, int timeout_ms) {
+  bool iocp_wait(evt_event_list& event_list, int max_count, int64_t timeout_ms) {
     // clear the result vector
     event_list.clear();
 
     // get queued completion status
     ULONG ulRemoved = 0;
     std::vector<OVERLAPPED_ENTRY> evts(max_count);
-    if (!::GetQueuedCompletionStatusEx(iocp_, evts.data(), evts.size(), &ulRemoved, timeout_ms,
-                                       FALSE)) {
+    if (!::GetQueuedCompletionStatusEx(iocp_, evts.data(), static_cast<ULONG>(evts.size()),
+                                       &ulRemoved, static_cast<DWORD>(timeout_ms), FALSE)) {
       int ec = GetLastError();
       if (WAIT_TIMEOUT != ec) {
         logE() << "failed to get completed port:" << ec << std::endl;
@@ -805,7 +805,7 @@ protected:
     }
 
     // process the result
-    for (int i = 0; i < ulRemoved; i++) {
+    for (ULONG i = 0; i < ulRemoved; i++) {
       // validate the event data
       if (evts[i].lpOverlapped == nullptr) {
         // wakeup event or invalid socket

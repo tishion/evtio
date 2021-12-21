@@ -16,6 +16,7 @@
 #include <evtio.hpp>
 
 #include "common/log.hpp"
+#include "common/parsearg.hpp"
 #include "common/udp_socket.hpp"
 
 #if defined(_WIN32)
@@ -55,26 +56,32 @@ WindowsSocketApi gWinSocketApi;
 static bool g_exit = false;
 
 static void sigexit(int signo) {
-  logi() << "exit signal received...";
+  logi() << "exit signal [" << signo << "] received...";
   g_exit = true;
 }
 
-// static void usage(const char* program) {
-//  std::cout << "Usage:" << program << " ip port" << std::endl;
-//  std::cout << "Example:" << program << " 0.0.0.0 8000" << std::endl;
-//}
+static void usage(const char* program) {
+  std::cout << "Usage:" << program << " -h <host> -p <port>" << std::endl;
+  std::cout << "Example:" << program << " 0.0.0.0 8000" << std::endl;
+}
 
 int main(int argc, char* argv[]) {
-  //  if (argc != 3) {
-  //#if defined(_WIN32)
-  //    char fn[64] = {0};
-  //    _splitpath(argv[0], nullptr, nullptr, fn, nullptr);
-  //    usage(fn);
-  //#else
-  //    usage(basename(argv[0]));
-  //#endif
-  //    return -1;
-  //  }
+  uint16_t port = 8888;
+  char* host = "127.0.0.1";
+
+  const char* opt_flag = "h:p:";
+  int opt = getopt(argc, argv, opt_flag);
+  while (opt != -1) {
+    if (opt == 'h') {
+      host = optarg;
+    } else if (opt == 'p') {
+      port = static_cast<uint16_t>(std::atoi(optarg));
+    } else {
+      usage("echo_udp_server");
+      return -1;
+    }
+    opt = getopt(argc, argv, opt_flag);
+  }
 
   signal(SIGINT, sigexit);
 
@@ -89,7 +96,7 @@ int main(int argc, char* argv[]) {
     return -1;
   }
 
-  if (!udp_sock.bind("0.0.0.0", 8888 /*std::atoi(argv[2])*/)) {
+  if (!udp_sock.bind(host, port)) {
     loge() << "failed to bind socket to specified address";
     return -1;
   }
@@ -106,9 +113,7 @@ int main(int argc, char* argv[]) {
     return -1;
   }
 
-  logi() << "server is listening on "
-         << "0.0.0.0"
-         << ":" << 8888 /*argv[2]*/;
+  logi() << "server is listening on " << host << ":" << port;
 
   struct sockaddr src_addr;
   memset(&src_addr, 0, sizeof(sockaddr));
@@ -122,16 +127,19 @@ int main(int argc, char* argv[]) {
       break;
     }
 
+    logi() << "got " << event_list.size() << " events.";
     for (const auto& evt : event_list) {
       if (evt.flags & evtio::EVT_OP_READ && evt.context->userdata) {
         udp_socket* sock = static_cast<udp_socket*>(evt.context->userdata);
 
-        int rlen = sock->recvfrom(buf.data(), buf.size(), 0, &src_addr, &addr_len);
+        int rlen =
+            sock->recvfrom(buf.data(), static_cast<int>(buf.size()), 0, &src_addr, &addr_len);
         if (rlen < 0) {
           loge() << "recvfrom failed with return code:" << errno;
         } else if (rlen == 0) {
           logi() << "recvfrom returned 0, peer socket closed";
         } else {
+          logi() << "message[" << buf.data() << "] from client";
           int wlen = sock->sendto(buf.data(), rlen, 0, &src_addr, addr_len);
           if (wlen <= 0) {
             loge() << "sendto returned " << wlen;
