@@ -365,11 +365,9 @@ protected:
   }
 
   bool kqueue_wakeup() {
-    struct kevent event;
-    event.ident = wakeup_evt_id_;
-    event.filter = EVFILT_USER;
-    event.fflags = NOTE_TRIGGER;
-    if (::kevent(kqfd_, &event, 1, nullptr, 0, nullptr) < 0) {
+    struct kevent ev;
+    EV_SET(&ev, wakeup_evt_id_, EVFILT_USER, 0, NOTE_TRIGGER, 0, 0);
+    if (::kevent(kqfd_, &ev, 1, nullptr, 0, nullptr) < 0) {
       logE() << "failed to signal the wakeup event for kqueue:(" << errno << ")" << strerror(errno);
       return false;
     }
